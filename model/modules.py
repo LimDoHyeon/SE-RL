@@ -93,7 +93,7 @@ class Base_model(nn.Module):
 
         self.pooling = nn.AdaptiveAvgPool1d(1)
 
-        self.kesai = torch.tensor((1.0 / np.sqrt(2 * math.pi)).astype(np.float32)).cuda()
+        self.gauss_norm_const = torch.tensor((1.0 / np.sqrt(2 * math.pi)).astype(np.float32)).cuda()
 
         initialize_weights([self.conv_first], 1)
 
@@ -109,7 +109,7 @@ class Base_model(nn.Module):
         actionn = out[:, :, 0] + torch.exp(out[:, :, 1] / 2) * random_var
         action = actionn.view(fea.size(0), fea.size(1), -1)
 
-        action_prob = torch.log(self.kesai) - (out[:, :, 1] / 2) + (
+        action_prob = torch.log(self.gauss_norm_const) - (out[:, :, 1] / 2) + (
                     -0.5 * torch.pow((actionn - out[:, :, 0]), 2) / torch.exp(out[:, :, 1]))
         x1 = []
         for i in range(out.size(0)):
