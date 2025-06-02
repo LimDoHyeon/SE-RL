@@ -5,7 +5,6 @@ sys.path.append('../')
 from utils.util import check_parameters
 import time
 import logging
-from logger.set_logger import setup_logger
 from model.loss import Loss, mlloss
 import torch
 import os
@@ -104,6 +103,7 @@ class Trainer(object):
                     outs, outputs, act_prob = self.dualrnn(inputs)
                     total_outs.append(outs)
                     total_outputs.append(outputs)
+                    # PESQ - get rewards 
                     out_reward = mlloss(inputs, outputs.detach(), data_orig)
                     total_rewards.append(out_reward)
                     total_action_prob.append(act_prob)

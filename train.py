@@ -6,9 +6,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from model.modules import Base_model
 import trainingmodule
-
 import logging
-from logger import set_logger
 import wandb
 
 parser = argparse.ArgumentParser()
@@ -20,7 +18,7 @@ parser.add_argument("--train_file", default='/data/train.lst')
 parser.add_argument("--valid_noisy_data_path", default='/data/noisy_validset_mix_wav_16k_1s')
 parser.add_argument("--valid_clean_data_path", default='/data/clean_validset_mix_wav_16k_1s')
 parser.add_argument("--valid_file", default='/data/valid.lst')
-parser.add_argument("--sample_rate", type=int, default=16000)
+parser.add_argument("--sampling_rate", type=int, default=16000)
 parser.add_argument("--scale", type=int, default=0)
 parser.add_argument("--low_pass", type=int, default=0)
 parser.add_argument("--interpolate", type=int, default=0)
@@ -39,7 +37,7 @@ parser.add_argument('--normalize', default=0, type=int)
 parser.add_argument('--episod', default=0, type=int)
 
 # Training config
-parser.add_argument('--train_gpuid', default=[0], help='Whether use GPU')
+parser.add_argument('--train_gpuid', default=[0, 1], help='Whether use GPU')
 parser.add_argument('--epochs', default=300, type=int, help='Number of maximum epochs')
 parser.add_argument('--early_stop', dest='early_stop', default=10, type=int, help='Early stop training when no improvement for 10 epochs')
 parser.add_argument('--max_norm', default=3, type=float, help='Gradient norm threshold to clip')
@@ -71,10 +69,7 @@ parser.add_argument('--logger_tofile', default=True)
 parser.add_argument('--experiment_name', type=str, default='SERL‑exp', help='WandB run name')
 
 def main(args):
-    set_logger.setup_logger(args.logger_name, args.logger_path,
-                            screen=args.logger_screen, tofile=args.logger_tofile)
-    logger = logging.getLogger(args.logger_name)
-
+    logger = logging.getLogger(__name__)
     logger.info(args)
 
     ###
@@ -86,16 +81,16 @@ def main(args):
     # build dataloader
     logger.info('Building the dataloader')
     train_dataset = AudioDataset(
-        noisy_data_path=args.train_noisy_data_path,
-        clean_data_path=args.train_clean_data_path,
-        file_names=args.train_file,
-        sampling_rate=args.sample_rate)
+        noisy_root=args.train_noisy_data_path,
+        clean_root=args.train_clean_data_path,
+        list_file=args.train_file,
+        sampling_rate=args.sampling_rate)
 
     val_dataset = AudioDataset(
-        noisy_data_path=args.valid_noisy_data_path,
-        clean_data_path=args.valid_clean_data_path,
-        file_names=args.valid_file,
-        sampling_rate=args.sample_rate)
+        noisy_root=args.valid_noisy_data_path,
+        clean_root=args.valid_clean_data_path,
+        list_file=args.valid_file,
+        sampling_rate=args.sampling_rate)
 
     logger.info(val_dataset[0][0].size())
     logger.info(val_dataset[0][1].size())
@@ -132,6 +127,12 @@ def main(args):
 
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        level = logging.INFO,
+        format ="[%(asctime)s] %(levelname)s — %(message)s",
+        datefmt="%H:%M:%S")
+    logger = logging.getLogger("train")
+
     args = parser.parse_args()
     print(args)
     main(args)

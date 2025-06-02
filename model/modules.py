@@ -93,7 +93,8 @@ class Base_model(nn.Module):
 
         self.pooling = nn.AdaptiveAvgPool1d(1)
 
-        self.gauss_norm_const = torch.tensor((1.0 / np.sqrt(2 * math.pi)).astype(np.float32)).cuda()
+        # self.gauss_norm_const = torch.tensor((1.0 / np.sqrt(2 * math.pi)).astype(np.float32)).cuda()
+        self.register_buffer("gauss_norm_const", torch.tensor(1 / np.sqrt(2 * np.pi), dtype=torch.float32))
 
         initialize_weights([self.conv_first], 1)
 
@@ -103,22 +104,24 @@ class Base_model(nn.Module):
         for t in range(self.times):
             feas = getattr(self, f'b_{t}')(feas)
 
-        out = self.pooling(feas)
-        out = out.view(fea.size(0), -1, 2)
-        random_var = torch.randn((out.size(0), out.size(1))).cuda()
+        out = self.pooling(feas).view(fea.size(0), -1, 2)
+
+        # device-agnostic 난수
+        random_var = torch.randn_like(out[:, :, 0])
+
         actionn = out[:, :, 0] + torch.exp(out[:, :, 1] / 2) * random_var
         action = actionn.view(fea.size(0), fea.size(1), -1)
 
-        action_prob = torch.log(self.gauss_norm_const) - (out[:, :, 1] / 2) + (
-                    -0.5 * torch.pow((actionn - out[:, :, 0]), 2) / torch.exp(out[:, :, 1]))
-        x1 = []
-        for i in range(out.size(0)):
-            conv_input = fea[i]
-            conv_ker = action[i]
-            conv_out = F.conv1d(conv_input.view(1, fea.size(1), fea.size(2)),
-                                conv_ker.view(1, action.size(1), action.size(2)), padding=1)
-            x1.append(conv_out)
+        action_prob = (
+                torch.log(self.gauss_norm_const)
+                - (out[:, :, 1] / 2)
+                - 0.5 * (actionn - out[:, :, 0]) ** 2 / torch.exp(out[:, :, 1]))
 
-        outputs = torch.cat(x1, 0)
+        # -------- 배치 전체를 한 번에 group-conv -------- #
+        B, C, T = fea.size()
+        outputs = F.conv1d(
+            fea.view(1, B * C, T),
+            action.view(B * C, 1, action.size(2)),
+            groups=B * C, padding=1).view(B, C, -1)
 
         return out, outputs, action_prob
