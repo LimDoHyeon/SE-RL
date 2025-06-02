@@ -122,10 +122,3 @@ class Base_model(nn.Module):
         outputs = torch.cat(x1, 0)
 
         return out, outputs, action_prob
-
-
-if __name__ == '__main__':
-    x = torch.tensor(torch.arange(3 * 1 * 16384).reshape(3, 1, 16384), dtype=torch.float)
-    print(x.size())
-    model = Base_model(1, 1, 16, 8, 4, 1)
-    output = model(x) 
