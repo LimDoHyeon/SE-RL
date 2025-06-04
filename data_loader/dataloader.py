@@ -18,7 +18,7 @@ from typing import List, Tuple, Optional
 import numpy as np
 import torch
 import torchaudio
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 
 
 # -------------------- Helper functions -------------------- #
@@ -141,30 +141,6 @@ class AudioDataset(Dataset):
             wav = wav[:1, :]
         return wav
 
-    # ------------------------------------------- #
-    def _maybe_crop(self, wav: torch.Tensor) -> torch.Tensor:
-        if self.segment_len is None:
-            return wav
-
-        total = wav.size(1)
-        if total < self.segment_len:
-            # zero-pad short utterances
-            padded = torch.zeros(1, self.segment_len, dtype=wav.dtype)
-            padded[:, :total] = wav
-            return padded
-
-        if self.random_crop:
-            max_start = total - self.segment_len
-            start = random.randint(0, max_start)
-        else:
-            start = 0  # deterministic
-
-        end = start + self.segment_len
-        return wav[:, start:end]
-
-    # ------------------------------------------- #
-    def _augment(self, wav: torch.Tensor) -> torch.Tensor:
-        pass
 
     # ------------------------------------------- #
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -175,46 +151,5 @@ class AudioDataset(Dataset):
         noisy = self._load_audio(noisy_path, self.sample_rate)
         clean = self._load_audio(clean_path, self.sample_rate)
 
-        # optional cropping
-        # noisy = self._maybe_crop(noisy)
-        # clean = self._maybe_crop(clean)
-
-        # light augmentation (noisy only)
-        # noisy = self._augment(noisy)
-
         assert noisy.shape == clean.shape, "Shape mismatch after cropping."
         return noisy.contiguous(), clean.contiguous()
-
-
-# -----------------------------------------------------------------------------#
-#                           Public factory convenience                         #
-# -----------------------------------------------------------------------------#
-def build_dataloader(
-    noisy_root: str, clean_root: str, list_file: str,
-    batch_size: int, segment_len: Optional[int] = 16384,
-    shuffle: bool = True, num_workers: int = 4,
-    random_crop: bool = False, scale_aug: bool = False,
-    lowpass_aug: bool = False, sample_rate: int = 16000,
-    pin_memory: bool = True,) -> DataLoader:
-    """
-    Simplified helper that instantiates ``AudioDataset`` and wraps it in a
-    ``torch.utils.data.DataLoader``.
-    """
-    dataset = AudioDataset(
-        noisy_root=noisy_root, clean_root=clean_root, list_file=list_file,
-        segment_len=segment_len, random_crop=random_crop,
-        scale_aug=scale_aug, lowpass_aug=lowpass_aug,
-        sample_rate=sample_rate,
-    )
-
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        collate_fn=pad_collate if segment_len is None else None,
-        worker_init_fn=worker_init_fn,
-        pin_memory=pin_memory,
-        drop_last=False,
-    )
-    return dataloader
