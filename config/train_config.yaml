@@ -1,0 +1,53 @@
+# --- 데이터 경로 & 샘플링 --- #
+train_noisy_data_path: "data/Valentini/valentini/"
+train_clean_data_path: "data/Valentini/valentini/"
+train_file: "data/Valentini/valentini/train0.lst"
+
+valid_noisy_data_path: "data/Valentini/valentini/"
+valid_clean_data_path: "data/Valentini/valentini/"
+valid_file: "data/Valentini/valentini/val.lst"
+
+sample_rate: 16000
+scale: 0
+low_pass: 0
+interpolate: 0
+
+# --- 모델 --- #
+model: 1
+in_nc: 1
+out_nc: 1
+nf: 128
+ns: 64
+times: 4
+weights: 0
+mul: 0
+normalize: 0
+episod: 0
+
+# --- 학습 --- #
+epochs: 300
+early_stop: 10
+max_norm: 3
+resume_state: 0
+resume_path: ""
+
+batch_size: 32
+num_workers: 6
+
+optimizer: "adam"
+lr: 0.001
+momentum: 0.0
+l2: 0.0
+scheduler_factor: 0.5
+scheduler_patience: 2
+scheduler_min_lr: 1.0e-8
+
+save_folder: "exp/temp"
+
+print_freq: 1000
+logger_name: "asuper"
+logger_path: "exp/log"
+logger_screen: false
+logger_tofile: true
+
+experiment_name: "SERL-exp"

@@ -1,138 +1,138 @@
+import os
 import argparse
-import torch
+import logging
 
-from data_loader.dataloader import AudioDataset
+import torch
+from torch.nn import DataParallel
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+from data_loader.dataloader import AudioDataset
 from model.modules import Base_model
 import trainingmodule
-import logging
+from utils.util import update_namespace_from_yaml
 import wandb
 
-parser = argparse.ArgumentParser()
-# General config
-# Task related
-parser.add_argument("--train_noisy_data_path", default='/data/noisy_trainset_mix_wav_16k')
-parser.add_argument("--train_clean_data_path", default='/data/clean_trainset_mix_wav_16k_1s')
-parser.add_argument("--train_file", default='/data/train.lst')
-parser.add_argument("--valid_noisy_data_path", default='/data/noisy_validset_mix_wav_16k_1s')
-parser.add_argument("--valid_clean_data_path", default='/data/clean_validset_mix_wav_16k_1s')
-parser.add_argument("--valid_file", default='/data/valid.lst')
-parser.add_argument("--sampling_rate", type=int, default=16000)
-parser.add_argument("--scale", type=int, default=0)
-parser.add_argument("--low_pass", type=int, default=0)
-parser.add_argument("--interpolate", type=int, default=0)
 
-# Network architecture
-parser.add_argument('--model', default=1, type=int)
-parser.add_argument('--in_nc', default=1, type=int)
-parser.add_argument('--out_nc', default=1, type=int)
-parser.add_argument('--nf', default=128, type=int)
-parser.add_argument('--ns', default=64, type=int)
-parser.add_argument('--times', default=4, type=int)
-# parser.add_argument('--sinc', default=0, type=int)
-parser.add_argument('--weights', default=0, type=float)
-parser.add_argument('--mul', default=0, type=int)
-parser.add_argument('--normalize', default=0, type=int)
-parser.add_argument('--episod', default=0, type=int)
+def setup_logging():
+    """기본 로그 설정: single-process이므로 INFO 레벨로 고정"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] %(levelname)s ▸ %(message)s",
+        datefmt="%H:%M:%S"
+    )
+    return logging.getLogger("SE-RL")
 
-# Training config
-parser.add_argument('--train_gpuid', default=[0, 1], help='Whether use GPU')
-parser.add_argument('--epochs', default=300, type=int, help='Number of maximum epochs')
-parser.add_argument('--early_stop', dest='early_stop', default=10, type=int, help='Early stop training when no improvement for 10 epochs')
-parser.add_argument('--max_norm', default=3, type=float, help='Gradient norm threshold to clip')
-parser.add_argument('--resume_state', default=0, type=int)
-parser.add_argument('--resume_path', default='')
-
-# minibatch
-parser.add_argument('--batch_size', default=32, type=int, help='Batch size')
-parser.add_argument('--num_workers', default=6, type=int, help='Number of workers to generate minibatch')
-# optimizer
-parser.add_argument('--optimizer', default='adam', type=str, choices=['sgd', 'adam'], help='Optimizer (support sgd and adam now)')
-parser.add_argument('--lr', default=1e-3, type=float, help='Init learning rate')
-parser.add_argument('--momentum', default=0.0, type=float, help='Momentum for optimizer')
-parser.add_argument('--l2', default=0.0, type=float, help='weight decay (L2 penalty)')
-parser.add_argument('--scheduler_factor', default=0.5, type=float)
-parser.add_argument('--scheduler_patience', default=2, type=int)
-parser.add_argument('--scheduler_min_lr', default=1e-8, type=float)
-
-# save and load model
-parser.add_argument('--save_folder', default='exp/temp', help='Location to save epoch models')
-
-# logging
-parser.add_argument('--print_freq', default=1000, type=int, help='Frequency of printing training infomation')
-parser.add_argument('--logger_name', default='asuper')
-parser.add_argument('--logger_path', default='exp/log')
-parser.add_argument('--logger_screen', default=False)
-parser.add_argument('--logger_tofile', default=True)
-
-parser.add_argument('--experiment_name', type=str, default='SERL‑exp', help='WandB run name')
 
 def main(args):
-    logger = logging.getLogger(__name__)
-    logger.info(args)
+    # GPU 개수 감지
+    num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 
-    ###
+    # 디바이스 설정: 첫번째 GPU 또는 CPU
+    if num_gpus >= 1:
+        device = torch.device("cuda:0")
+    else:
+        device = torch.device("cpu")
+
+    logger = setup_logging()
+
+    # WandB (single-process이므로 rank 개념 없음)
     wandb_run = wandb.init(
-        project='SE-RL',
+        project="SE-RL",
         name=args.experiment_name,
-        config=vars(args))
+        entity="do-hyeon-gwangju-institute-of-science-and-technology",
+        config=vars(args)
+    )
 
-    # build dataloader
-    logger.info('Building the dataloader')
+    # 데이터셋 & DataLoader
     train_dataset = AudioDataset(
         noisy_root=args.train_noisy_data_path,
         clean_root=args.train_clean_data_path,
         list_file=args.train_file,
-        sampling_rate=args.sampling_rate)
-
+        sample_rate=args.sample_rate
+    )
     val_dataset = AudioDataset(
         noisy_root=args.valid_noisy_data_path,
         clean_root=args.valid_clean_data_path,
         list_file=args.valid_file,
-        sampling_rate=args.sampling_rate)
+        sample_rate=args.sample_rate
+    )
 
-    logger.info(val_dataset[0][0].size())
-    logger.info(val_dataset[0][1].size())
-    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,
-                                  drop_last=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers,
-                                drop_last=True)
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=True
+    )
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=False
+    )
 
-    logger.info('Train Datasets Length: {}, Val Datasets Length: {}'.format(
-        len(train_dataloader), len(val_dataloader)))
+    # 모델 생성 및 DataParallel 래핑
+    model = Base_model(
+        in_nc=args.in_nc,
+        out_nc=args.out_nc,
+        nf=args.nf,
+        gc=args.ns,
+        times=args.times,
+        normalize=args.normalize
+    ).to(device)
 
-    # build model
-    logger.info("Building the model")
-    super_model = Base_model(in_nc=args.in_nc, out_nc=args.out_nc, nf=args.nf, gc=args.ns, times=args.times,
-                             normalize=args.normalize)
-    logger.info(super_model)
+    if num_gpus >= 2:
+        model = DataParallel(model, device_ids=list(range(num_gpus)))
 
-    # build optimizer
-    logger.info("Building the optimizer")
-    if args.optimizer == 'adam':
-        optimizer = torch.optim.Adam(super_model.parameters(), lr=args.lr, weight_decay=args.l2)
-    else:
-        assert 1 == 0
+    # Optimizer & Scheduler 설정
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.l2
+    )
+    scheduler = ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=args.scheduler_factor,
+        patience=args.scheduler_patience,
+        min_lr=args.scheduler_min_lr,
+        verbose=True
+    )
 
-    # build scheduler
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=args.scheduler_factor, patience=args.scheduler_patience,
-                                  verbose=True, min_lr=args.scheduler_min_lr)
-
-    # build trainer
-    logger.info('Builing the Trainer')
-    logger.info('trainingmodule')
-    trainer = trainingmodule.Trainer(train_dataloader, val_dataloader, super_model, optimizer, scheduler, opt=args, wandb_run=wandb_run)
+    # Trainer 실행
+    trainer = trainingmodule.Trainer(
+        train_dataloader,
+        val_dataloader,
+        model,
+        optimizer,
+        scheduler,
+        opt=args,
+        wandb_run=wandb_run
+    )
     trainer.run()
 
 
-if __name__ == '__main__':
-    logging.basicConfig(
-        level = logging.INFO,
-        format ="[%(asctime)s] %(levelname)s — %(message)s",
-        datefmt="%H:%M:%S")
-    logger = logging.getLogger("train")
-
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="SE-RL DDP trainer")
+    parser.add_argument("--config", "-c", type=str, default="config/train_config.yaml",
+                        help="YAML config file")
+    parser.add_argument("--resume_path", "-r", type=str, default="",
+                        help="Checkpoint to resume (overrides YAML)")
     args = parser.parse_args()
-    print(args)
+    # CLI에서 받은 resume_path 따로 저장
+    cli_resume_path = args.resume_path
+
+    # YAML 덮어쓰기
+    args = update_namespace_from_yaml(args, args.config)
+
+    # CLI 값이 있으면 다시 우선 적용
+    if cli_resume_path:
+        args.resume_path = cli_resume_path
+
     main(args)
+
+# torchrun --nproc_per_node=2 --rdzv_backend=c10d --rdzv_endpoint=127.0.0.1:29500 python train.py --config configs/train_config.yaml
