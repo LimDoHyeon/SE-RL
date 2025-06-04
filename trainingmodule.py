@@ -1,252 +1,390 @@
-import sys
+#!/usr/bin/env python
+"""Trainer rewritten for DDP-friendly training.
+Removes hard-coded .cuda() / device selection and relies on the caller to
+wrap the model with DistributedDataParallel (DDP) and to place it on the
+correct device.  All tensors are moved to the same device as the model at
+runtime so the code now works on CPU, single-GPU, or multi-GPU DDP
+without further changes.
+"""
+from __future__ import annotations
 
-sys.path.append('../')
+import logging
+import time
+from pathlib import Path
+
+import torch
+from torch.nn.utils import clip_grad_norm_  # type: ignore
+import torch.distributed as dist
 
 from utils.util import check_parameters
-import time
-import logging
 from model.loss import Loss, mlloss
-import torch
-import os
-from torch.nn.parallel import data_parallel
+from tqdm import tqdm
 
 
-class Trainer(object):
-    def __init__(self, train_dataloader, val_dataloader, spec_model, optimizer, scheduler, opt):
-        super(Trainer).__init__()
+class Trainer:
+    """Generic training/validation loop wrapper, DDP‑safe."""
+
+    def __init__(
+        self,
+        train_dataloader: torch.utils.data.DataLoader,
+        val_dataloader: torch.utils.data.DataLoader,
+        model: torch.nn.Module,
+        optimizer: torch.optim.Optimizer,
+        scheduler: torch.optim.lr_scheduler._LRScheduler | torch.optim.lr_scheduler.ReduceLROnPlateau,
+        opt,
+        *,
+        wandb_run=None,
+    ) -> None:
+        # Dataloaders
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
+
+        # Core objects
+        self.model = model  # may already be a DDP wrapper
+        self.optimizer = optimizer
         self.scheduler = scheduler
-        self.cur_epoch = 0
-        self.total_epoch = opt.epochs
-        self.early_stop = opt.early_stop
+        self.wandb_run = wandb_run
 
-        self.print_freq = opt.print_freq
+        # Hyper‑parameters / misc flags
+        self.total_epoch: int = opt.epochs
+        self.early_stop: int = opt.early_stop
+        self.print_freq: int = opt.print_freq
+        self.clip_norm: float = opt.max_norm if opt.max_norm else 0.0
+        self.save_path: Path = Path(opt.save_folder)
+        self.save_path.mkdir(parents=True, exist_ok=True)
+        self.resume_state: int = opt.resume_state
+        self.weights: float = opt.weights
+        self.episod: int = opt.episod
+
+        # Device inferred from the model
+        self.device: torch.device = next(model.parameters()).device
+
+        # Logging
         self.logger = logging.getLogger(opt.logger_name)
-        self.save_path = opt.save_folder
+        self.logger.info(
+            "Model parameters: %.3f Mb", check_parameters(self._unwrap(self.model))
+        )
 
-        # self.sinc = opt.sinc
-        self.weights = opt.weights
-        self.resume_state = opt.resume_state
-        self.episod = opt.episod
-        if opt.train_gpuid:
-            self.logger.info('Load Nvidia GPU .....')
-            self.logger.info(torch.cuda.device_count())
-            self.device = torch.device(
-                'cuda:{}'.format(opt.train_gpuid[0]))
-            self.gpuid = opt.train_gpuid
-            if opt.resume_state == 0:
-                self.dualrnn = spec_model.to(self.device)
-                self.logger.info(
-                    'Loading Model parameters: {:.3f} Mb'.format(check_parameters(self.dualrnn)))
-        else:
-            self.logger.info('Load CPU ...........')
-            self.device = torch.device('cpu')
-            self.dualrnn = spec_model.to(self.device)
-            self.logger.info(
-                'Loading Model parameters: {:.3f} Mb'.format(check_parameters(self.dualrnn)))
+        # Resume checkpoint if requested
+        if self.resume_state:
+            self._load_checkpoint(opt.resume_path, partial=(self.resume_state == 2))
 
-        if opt.resume_state:
-            ckp = torch.load(opt.resume_path, map_location='cpu')
-            self.cur_epoch = ckp['epoch']
-            self.logger.info("Resume from checkpoint {}: epoch {:.3f}".format(
-                opt.resume_path, self.cur_epoch))
+        # Internal trackers
+        self.cur_epoch: int = 0
 
-            if opt.resume_state == 2:
-                model_dict = spec_model.state_dict()
-                pretrained_dict = ckp['model_state_dict']
-                pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
-                model_dict.update(pretrained_dict)
-                spec_model.load_state_dict(model_dict)
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+    def run(self) -> None:
+        """Full training schedule across self.total_epoch epochs."""
+        best_val_loss, _ = self._validate(self.cur_epoch)  # baseline before training
+        self.logger.info("Starting training ‑ baseline val_loss=%.4f", best_val_loss)
+        no_improve = 0
+
+        while self.cur_epoch < self.total_epoch:
+            self.cur_epoch += 1
+
+            # DDP sampler epoch shuffle, if applicable
+            sampler = getattr(self.train_dataloader, "sampler", None)
+            if sampler is not None and hasattr(sampler, "set_epoch"):
+                sampler.set_epoch(self.cur_epoch)
+
+            tr_loss, _ = self._train_one_epoch(self.cur_epoch)
+            val_loss, _ = self._validate(self.cur_epoch)
+
+            # Scheduler step
+            if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                self.scheduler.step(val_loss)
             else:
-                spec_model.load_state_dict(
-                    ckp['model_state_dict'])
+                self.scheduler.step()
 
-            self.dualrnn = spec_model.to(self.device)
-            self.logger.info(
-                'Loading Model parameters: {:.3f} Mb'.format(check_parameters(self.dualrnn)))
-            #     optimizer.load_state_dict(ckp['optim_state_dict'])
-            self.optimizer = optimizer
-        else:
-            self.optimizer = optimizer
+            # WandB logging (master only)
+            if self.wandb_run is not None and (not dist.is_initialized() or dist.get_rank() == 0):
+                self.wandb_run.log({"epoch": self.cur_epoch, "train_loss": tr_loss, "val_loss": val_loss})
 
-        if opt.max_norm:
-            self.clip_norm = opt.max_norm
-            self.logger.info(
-                "Gradient clipping by {}, default L2".format(self.clip_norm))
-        else:
-            self.clip_norm = 0
+            # Early‑stopping & checkpointing (rank 0)
+            master = (not dist.is_initialized()) or dist.get_rank() == 0
+            if master:
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    no_improve = 0
+                    self._save_checkpoint(self.cur_epoch, tr_loss, val_loss)
+                else:
+                    no_improve += 1
+                    self.logger.info("No improvement for %d epochs", no_improve)
+                if no_improve >= self.early_stop:
+                    self.logger.info("Early stopping after %d epochs", self.cur_epoch)
+                    break
 
-    def train(self, epoch):
-        self.logger.info('Start training from epoch: {:d}, iteration: {:d}'.format(epoch, 0))
-        self.dualrnn.train()
+    # Compatibility wrappers (for older scripts)
+    # --------------------------------------------------------------
+    from tqdm import tqdm
 
-        # debugging
-        num_batchs = len(self.train_dataloader)
-        print('num_batchs: {}'.format(num_batchs))
+    def train(self, epoch: int) -> tuple[float, float]:
+        """한 epoch 학습 수행 (tqdm으로 콘솔에 바로 진행률 표시)"""
+        self.logger.info("Start training epoch %d", epoch)
+        self.model.train()
 
-        total_loss = 0.0
-        total_loss_hr = 0.0
-        total_loss_snr = 0.0
+        epoch_loss, epoch_snr = 0.0, 0.0
         start_time = time.time()
 
-        for i, load_data in enumerate(self.train_dataloader):
-            data_lr = load_data[0].to(self.device)
-            data_orig = load_data[1].to(self.device)
-            total_outs = []
-            total_outputs = []
-            total_rewards = []
-            total_action_prob = []
-            if self.gpuid:
-                inputs = data_lr
-                for i in range(self.episod):
-                    outs, outputs, act_prob = self.dualrnn(inputs)
+        # tqdm으로 데이터로더를 래핑하면 루프 돌면서 콘솔에 자동으로 프로그레스 바가 찍힙니다.
+        loop = tqdm(self.train_dataloader, desc=f"[Train][Epoch {epoch}]", unit="batch")
+        for step, (data_noisy, data_clean) in enumerate(loop, 1):
+            data_noisy = data_noisy.to(self.device, non_blocking=True)
+            data_clean = data_clean.to(self.device, non_blocking=True)
+
+            if self.episod > 0:
+                # RL 모드
+                inputs = data_noisy
+                total_rewards, total_action_prob = [], []
+                total_outs, total_outputs = [], []
+
+                for _ in range(self.episod):
+                    outs, outputs, act_prob = self.model(inputs)
                     total_outs.append(outs)
                     total_outputs.append(outputs)
-                    # PESQ - get rewards 
-                    out_reward = mlloss(inputs, outputs.detach(), data_orig)
-                    total_rewards.append(out_reward)
+                    reward = mlloss(inputs, outputs.detach(), data_clean)
+                    total_rewards.append(reward)
                     total_action_prob.append(act_prob)
                     inputs = outputs.detach()
-            for i in range(self.episod):
-                self.optimizer.zero_grad()
-                G = total_rewards[i]
-                alpha = 0.1
-                for j in range(i + 1, self.episod):
-                    G = G + alpha * total_rewards[j]
-                    alpha = alpha * alpha
-                action_prob = 0.0001 * torch.sum(total_action_prob[i], dim=1)
-                state_value = -1.0 * torch.mean(G * action_prob)
-                epoch_loss, epoch_loss_snr = Loss(total_outs[i], total_outputs[i], data_orig)
-                (state_value + self.weights * epoch_loss).backward()
 
-                if self.clip_norm:
-                    torch.nn.utils.clip_grad_norm_(self.dualrnn.parameters(), self.clip_norm)
+                for i in range(self.episod):
+                    self.optimizer.zero_grad(set_to_none=True)
+                    G = total_rewards[i]
+                    gamma = 0.1
+                    for j in range(i + 1, self.episod):
+                        G = G + gamma * total_rewards[j]
+                        gamma *= gamma
 
+                    action_prob = 0.0001 * torch.sum(total_action_prob[i], dim=1)
+                    state_value = -1.0 * torch.mean(G * action_prob)
+
+                    # debugging
+                    outs, outputs, act_prob = self.model(data_noisy)
+                    print("outs min/max/any NaN:", outs.min().item(), outs.max().item(), torch.isnan(outs).any())
+                    print("outputs min/max/any NaN:", outputs.min().item(), outputs.max().item(),
+                          torch.isnan(outputs).any())
+                    print("act_prob min/max/any NaN:", act_prob.min().item(), act_prob.max().item(),
+                          torch.isnan(act_prob).any())
+
+                    loss_dist_rl, _ = Loss(total_outs[i], total_outputs[i], data_clean)
+                    loss = state_value + self.weights * loss_dist_rl
+                    loss.backward()
+
+                    if self.clip_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(self._unwrap(self.model).parameters(), self.clip_norm)
+                    self.optimizer.step()
+
+                loss_dist, loss_snr_rl = Loss(total_outs[-1], total_outputs[-1], data_clean)
+                epoch_loss += loss_dist.item()
+                epoch_snr += loss_snr_rl.item()
+
+            else:
+                # Supervised-only 모드
+                outs, outputs, _ = self.model(data_noisy)
+                loss_dist, loss_snr_sl = Loss(outs, outputs, data_clean)
+
+                self.optimizer.zero_grad(set_to_none=True)
+                loss_dist.backward()
+                if self.clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self._unwrap(self.model).parameters(), self.clip_norm)
                 self.optimizer.step()
 
-            epoch_loss, epoch_loss_snr = Loss(inputs, data_orig)
-            epoch_loss_hr = epoch_loss
+                epoch_loss += loss_dist.item()
+                epoch_snr += loss_snr_sl.item()
 
-            total_loss_hr += epoch_loss_hr.item()
-            total_loss += epoch_loss.item()
-            total_loss_snr += epoch_loss_snr.item()
+            # tqdm 프로그레스 바에 현재 평균 loss, snr을 함께 보여주도록 설정
+            avg_loss = epoch_loss / step
+            avg_snr = epoch_snr / step
+            loop.set_postfix({"loss": f"{avg_loss:.4f}", "snr": f"{avg_snr:.2f}"})
 
-            if (i + 1) % self.print_freq == 0:
-                message = '<epoch:{:d}, iter:{:d}, lr:{:.3e}, loss:{:.3f}, loss_hr:{:.3f}, snr:{:.3f}>'.format(
-                    epoch, i + 1, self.optimizer.param_groups[0]['lr'], total_loss / (i + 1),
-                           total_loss_hr / (i + 1), total_loss_snr / (i + 1))
-                self.logger.info(message)
-        end_time = time.time()
-        total_loss = total_loss / (i + 1)
-        total_loss_snr = total_loss_snr / (i + 1)
-        total_loss_hr = total_loss_hr / (i + 1)
-        message = 'Finished *** <epoch:{:d}, iter:{:d}, lr:{:.3e}, loss:{:.3f}, loss_hr:{:.3f}, snr:{:.3f}, Total time:{:.3f} min> '.format(
-            epoch, i + 1, self.optimizer.param_groups[0]['lr'], total_loss, total_loss_hr, total_loss_snr,
-                   (end_time - start_time) / 60)
-        self.logger.info(message)
-        return total_loss, total_loss_snr
-
-    def validation(self, epoch):
+        epoch_loss /= len(self.train_dataloader)
+        epoch_snr /= len(self.train_dataloader)
         self.logger.info(
-            'Start Validation from epoch: {:d}, iter: {:d}'.format(epoch, 0))
-        self.dualrnn.eval()
-        num_batchs = len(self.val_dataloader)
-        total_loss = 0.0
-        total_loss_snr = 0.0
-        total_loss_hr = 0.0
+            f"Finished Epoch {epoch:03d}  ─ loss: {epoch_loss:.4f},  snr: {epoch_snr:.4f}dB"
+        )
+        return epoch_loss, epoch_snr
+
+    def validation(self, epoch: int) -> tuple[float, float]:
+        """한 epoch 검증 수행 (tqdm 적용 버전)"""
+        self.logger.info("Start Validation epoch %d", epoch)
+        self.model.eval()
+
+        val_loss, val_snr = 0.0, 0.0
         start_time = time.time()
+
+        # ── `tqdm`으로 데이터로더를 래핑 ──
+        loop = tqdm(self.val_dataloader, desc=f"[Valid][Epoch {epoch}]", leave=False)
         with torch.no_grad():
-            for i, load_data in enumerate(self.val_dataloader):
-                data_lr = load_data[0].to(self.device)
-                data_orig = load_data[1].to(self.device)
+            for step, (data_noisy, data_clean) in enumerate(loop, 1):
+                data_noisy = data_noisy.to(self.device, non_blocking=True)
+                data_clean = data_clean.to(self.device, non_blocking=True)
 
-                if self.gpuid:
-                    inputs = data_lr
-                    for i in range(self.episod):
-                        outs, outputs, out_prob = self.dualrnn(inputs)
-                        inputs = outputs.detach()
-
-                epoch_loss, epoch_loss_snr = Loss(outs, inputs, data_orig)
-                epoch_loss_hr = epoch_loss
-
-                total_loss_hr += epoch_loss_hr.item()
-                total_loss += epoch_loss.item()
-                total_loss_snr += epoch_loss_snr.item()
-
-                if (i + 1) % self.print_freq == 0:
-                    message = '<epoch:{:d}, iter:{:d}, lr:{:.3e}, loss:{:.3f}, loss_hr:{:.3f}, snr:{:.3f}>'.format(
-                        epoch, i + 1, self.optimizer.param_groups[0]['lr'], total_loss / (i + 1),
-                               total_loss_hr / (i + 1), total_loss_snr / (i + 1))
-                    self.logger.info(message)
-
-        end_time = time.time()
-        total_loss = total_loss / (i + 1)
-        total_loss_snr = total_loss_snr / (i + 1)
-        total_loss_hr = total_loss_hr / (i + 1)
-        message = 'Finished *** <epoch:{:d}, iter:{:d}, lr:{:.3e}, loss:{:.3f}, loss_hr:{:.3f}, snr:{:.3f}, Total time:{:.3f} min> '.format(
-            epoch, i + 1, self.optimizer.param_groups[0]['lr'], total_loss, total_loss_hr, total_loss_snr,
-            (end_time - start_time) / 60)
-        self.logger.info(message)
-        return total_loss, total_loss_snr
-
-    def run(self):
-        train_loss = []
-        val_loss = []
-        #        while 1:
-        with torch.cuda.device(self.gpuid[0]):
-            v_loss, v_snr = self.validation(self.cur_epoch)
-            best_loss = v_loss
-
-            if self.resume_state:
-                best_loss = 1000000.0
-
-            self.logger.info("Starting epoch from {:d}, loss = {:.4f}".format(
-                self.cur_epoch, best_loss))
-            no_improve = 0
-            # starting training part
-            while self.cur_epoch < self.total_epoch:
-                self.cur_epoch += 1
-                t_loss, t_snr = self.train(self.cur_epoch)
-                v_loss, v_snr = self.validation(self.cur_epoch)
-
-                train_loss.append(t_loss)
-                val_loss.append(v_loss)
-
-                # schedule here
-                self.scheduler.step(v_loss)
-
-                if v_loss >= best_loss:
-                    no_improve += 1
-                    self.logger.info(
-                        'No improvement, Best Loss: {:.4f}'.format(best_loss))
+                if self.episod > 0:
+                    inputs = data_noisy
+                    for _ in range(self.episod):
+                        outs, outputs, _ = self.model(inputs)
+                        inputs = outputs
+                    loss_dist, loss_snr = Loss(outs, inputs, data_clean)
                 else:
-                    best_loss = v_loss
-                    no_improve = 0
-                    self.save_checkpoint(self.cur_epoch, t_loss, v_loss, t_snr, v_snr)
-                    self.logger.info('Epoch: {:d}, Now Best Loss Change: {:.4f}'.format(
-                        self.cur_epoch, best_loss))
+                    outs, outputs, _ = self.model(data_noisy)
+                    loss_dist, loss_snr = Loss(outs, outputs, data_clean)
 
-                if no_improve == self.early_stop:
-                    self.logger.info(
-                        "Stop training cause no impr for {:d} epochs".format(
-                            no_improve))
-                    break
-            self.logger.info("Training for {:d}/{:d} epoches done!".format(
-                self.cur_epoch, self.total_epoch))
+                val_loss += loss_dist.item()
+                val_snr += loss_snr.item()
 
-    def save_checkpoint(self, epoch, t_loss, v_loss, t_snr, v_snr):
-        '''
-           save model
-           best: the best model
-        '''
-        os.makedirs(self.save_path, exist_ok=True)
-        ckpt_name = 'nnet_iter%d_trloss%.4f_trsnr%.4f_valoss%.4f_vasnr%.4f_epoch%d.pt' % (
-            epoch, t_loss, t_snr, v_loss, v_snr, epoch)
+                # ── tqdm 막대 갱신 ──
+                loop.set_postfix({"val_loss": val_loss / step, "val_snr": val_snr / step})
 
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': self.dualrnn.state_dict(),
-            'optim_state_dict': self.optimizer.state_dict()
-        },
-            os.path.join(self.save_path, ckpt_name))
+        val_loss /= len(self.val_dataloader)
+        val_snr /= len(self.val_dataloader)
+        self.logger.info(f"[E{epoch:03d}] VAL loss={val_loss:.4f}  snr={val_snr:.2f} dB")
+        return val_loss, val_snr
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _train_one_epoch(self, epoch: int):
+        self.model.train()
+        epoch_loss, epoch_snr = 0.0, 0.0
+        start_time = time.time()
+
+        for step, (data_noisy, data_clean) in enumerate(self.train_dataloader, 1):
+            data_noisy = data_noisy.to(self.device, non_blocking=True)
+            data_clean = data_clean.to(self.device, non_blocking=True)
+
+            # RL 혹은 Supervised 모드 분기
+            if self.episod > 0:
+                # ── Reinforcement-style loop (episod > 0) ──
+                inputs = data_noisy
+                total_rewards, total_action_prob = [], []
+                total_outs, total_outputs = [], []
+
+                for _ in range(self.episod):
+                    outs, outputs, act_prob = self.model(inputs)
+                    total_outs.append(outs)
+                    total_outputs.append(outputs)
+                    # 보상 계산
+                    reward = mlloss(inputs, outputs.detach(), data_clean)
+                    total_rewards.append(reward)
+                    total_action_prob.append(act_prob)
+                    inputs = outputs.detach()
+
+                # 에피소드별로 backward & optimization
+                for i in range(self.episod):
+                    self.optimizer.zero_grad(set_to_none=True)
+
+                    # 누적 보상 G 계산 (할인율 gamma = 0.1)
+                    G = total_rewards[i]
+                    gamma = 0.1
+                    for j in range(i + 1, self.episod):
+                        G = G + gamma * total_rewards[j]
+                        gamma *= gamma
+
+                    # 정책 손실(state value)
+                    action_prob = 0.0001 * torch.sum(total_action_prob[i], dim=1)
+                    state_value = -1.0 * torch.mean(G * action_prob)
+
+                    # 왜곡 손실(signal distortion loss)
+                    loss_dist, loss_snr_rl = Loss(total_outs[i], total_outputs[i], data_clean)
+
+                    # 최종 손실: 정책 손실 + 가중치 * 왜곡 손실
+                    loss = state_value + self.weights * loss_dist
+                    loss.backward()
+
+                    if self.clip_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(self._unwrap(self.model).parameters(), self.clip_norm)
+                    self.optimizer.step()
+
+                # 마지막 에피소드의 왜곡 손실을 로그에 더함
+                loss_dist, loss_snr_rl = Loss(total_outs[-1], total_outputs[-1], data_clean)
+                epoch_loss += loss_dist.item()
+                epoch_snr += loss_snr_rl.item()
+
+            else:
+                # ── Supervised-only 모드 (episod == 0) ──
+                # 한 번만 forward → loss 계산 → backward → step
+                outs, outputs, _ = self.model(data_noisy)
+                loss_dist, loss_snr_sl = Loss(outs, outputs, data_clean)
+
+                self.optimizer.zero_grad(set_to_none=True)
+                loss_dist.backward()
+                if self.clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self._unwrap(self.model).parameters(), self.clip_norm)
+                self.optimizer.step()
+
+                # 로깅용으로 누적
+                epoch_loss += loss_dist.item()
+                epoch_snr += loss_snr_sl.item()
+
+            # 일정 주기마다 로그 출력
+            if step % self.print_freq == 0:
+                elapsed = time.time() - start_time
+                avg_loss = epoch_loss / step
+                avg_snr = epoch_snr / step
+                self.logger.info(
+                    f"[Epoch {epoch:03d} Step {step:04d}] loss={avg_loss:.4f} snr={avg_snr:.2f}  time={elapsed / 60:.1f}min"
+                )
+
+        # epoch 당 평균 loss, snr 계산 후 반환
+        epoch_loss /= len(self.train_dataloader)
+        epoch_snr /= len(self.train_dataloader)
+        self.logger.info(
+            f"Finished Epoch {epoch:03d}  ─ loss: {epoch_loss:.4f},  snr: {epoch_snr:.4f}dB"
+        )
+        return epoch_loss, epoch_snr
+
+    def _validate(self, epoch: int):
+        self.model.eval()
+        val_loss, val_snr = 0.0, 0.0
+        with torch.inference_mode():
+            for data_noisy, data_clean in self.val_dataloader:
+                data_noisy = data_noisy.to(self.device, non_blocking=True)
+                data_clean = data_clean.to(self.device, non_blocking=True)
+                outs, outputs, _ = self.model(data_noisy)
+                loss_dist, loss_snr = Loss(outs, outputs, data_clean)
+                val_loss += loss_dist.item()
+                val_snr += loss_snr.item()
+        nb = max(1, len(self.val_dataloader))
+        val_loss /= nb
+        val_snr /= nb
+
+        master = (not dist.is_initialized()) or dist.get_rank() == 0
+        if master:
+            self.logger.info("[E%03d] VAL loss=%.4f snr=%.2f dB", epoch, val_loss, val_snr)
+        return val_loss, val_snr
+
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
+    def _load_checkpoint(self, path: str | Path, *, partial: bool = False):
+        ckpt = torch.load(path, map_location="cpu")
+        self.cur_epoch = ckpt.get("epoch", 0)
+        model_state = ckpt["model_state_dict"]
+        if partial:
+            curr_state = self._unwrap(self.model).state_dict()
+            model_state = {k: v for k, v in model_state.items() if k in curr_state}
+            curr_state.update(model_state)
+            self._unwrap(self.model).load_state_dict(curr_state)
+        else:
+            self._unwrap(self.model).load_state_dict(model_state)
+        self.optimizer.load_state_dict(ckpt["optim_state_dict"])
+        self.logger.info("Resumed from %s (epoch %d)", path, self.cur_epoch)
+
+    def _save_checkpoint(self, epoch: int, train_loss: float, val_loss: float):
+        state = {
+            "epoch": epoch,
+            "model_state_dict": self._unwrap(self.model).state_dict(),
+            "optim_state_dict": self.optimizer.state_dict(),
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+        }
+        ckpt_name = f"nnet_iter{epoch}_trloss{train_loss:.4f}_valoss{val_loss:.4f}.pt"
+        torch.save(state, str(self.save_path / ckpt_name))
+        self.logger.info("Checkpoint saved: %s", ckpt_name)
+
+    @staticmethod
+    def _unwrap(model: torch.nn.Module) -> torch.nn.Module:
+        """Return underlying model if wrapped by DDP/DataParallel."""
+        return model.module if hasattr(model, "module") else model
