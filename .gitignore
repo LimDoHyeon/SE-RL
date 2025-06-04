@@ -1,2 +1,5 @@
 data
 .idea
+wandb
+__pycache__
+utils.__pycache__
