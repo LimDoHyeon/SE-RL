@@ -40,7 +40,7 @@ class LayerNorm(nn.Module):
     def forward(self, x):
         mean = x.mean(-1, keepdim=True)
         std = x.std(-1, keepdim=True)
-        return self.gamma * (x - mean) / (std + self.eps) + self.beta
+        return self.gamma.view(1, -1, 1) * (x - mean) / (std + self.eps) + self.beta.view(1, -1, 1)
 
 
 class ResidualDenseBlock(nn.Module):
@@ -108,20 +108,33 @@ class Base_model(nn.Module):
 
         # device-agnostic 난수
         random_var = torch.randn_like(out[:, :, 0])
+        mu = out[:, :, 0]
+        logvar = out[:, :, 1]
 
-        actionn = out[:, :, 0] + torch.exp(out[:, :, 1] / 2) * random_var
-        action = actionn.view(fea.size(0), fea.size(1), -1)
+        logvar_clamped = torch.clamp(logvar, min=-10.0, max=10.0)
+
+        random_var = torch.randn((mu.size(0), mu.size(1)), device=mu.device)
+        std = torch.exp(logvar_clamped / 2.0)
+
+        actionn = mu + std * random_var  # [B, channel_gauss]
+        action = actionn.view(fea.size(0), fea.size(1), -1)  # ([B, C_feat, K])
 
         action_prob = (
-                torch.log(self.gauss_norm_const)
-                - (out[:, :, 1] / 2)
-                - 0.5 * (actionn - out[:, :, 0]) ** 2 / torch.exp(out[:, :, 1]))
+                torch.log(self.gauss_norm_const.to(mu.device))
+                - 0.5 * logvar_clamped
+                - 0.5 * torch.pow((actionn - mu), 2) / torch.exp(logvar_clamped)
+        )  # [B, channel_gauss]
 
-        # -------- 배치 전체를 한 번에 group-conv -------- #
-        B, C, T = fea.size()
-        outputs = F.conv1d(
-            fea.view(1, B * C, T),
-            action.view(B * C, 1, action.size(2)),
-            groups=B * C, padding=1).view(B, C, -1)
+        #    fea[i]:  [C_feat, T]
+        #    action[i]: [C_feat, K]
+        x1 = []
+        for i in range(out.size(0)):
+            conv_input = fea[i].unsqueeze(0)  # [1, C_feat, T]
+            conv_ker = action[i].unsqueeze(0)  # [1, C_feat, K]
+            conv_out = F.conv1d(conv_input, conv_ker, padding=1)
+            # conv_out: [1, 1, T] (channel_dim=1로 축소)
+            x1.append(conv_out)
+
+        outputs = torch.cat(x1, dim=0)  # [B, 1, T]  (또는 [B, C_out, T], 모델 설계에 따라 달라질 수 있음)
 
         return out, outputs, action_prob
