@@ -2,12 +2,12 @@ import torch
 from utils.metrics import pesq_wrapper as pesq
 
 def Loss(gauss, data_predict, data_orig):
-    mu = gauss[:, :, 0]  # [B, channel_gauss]
+    # mu = gauss[:, :, 0]  # [B, channel_gauss]
     logvar = gauss[:, :, 1]  # [B, channel_gauss]
 
     logvar_clamped = torch.clamp(logvar, min=-20.0, max=20.0)  # overflow 방지
     var = torch.exp(logvar_clamped)  # [B, channel_gauss]
-    kl_loss = 0.5 * (mu ** 2 + var - 1 - logvar_clamped)
+    # kl_loss = 0.5 * (mu ** 2 + var - 1 - logvar_clamped)
 
     n_l2 = torch.mean(torch.pow(data_predict - data_orig, 2), dim=[1, 2])
     s_l2 = torch.mean(torch.pow(data_orig, 2), dim=[1, 2])
@@ -15,8 +15,9 @@ def Loss(gauss, data_predict, data_orig):
 
     avg_snr = torch.mean(snr)
     avg_mse = torch.mean(torch.sqrt(n_l2 + 1e-8))  # [B] → 평균
-    total_kl = torch.sum(kl_loss)  # 스칼라로 변환
-    return avg_mse + total_kl, avg_snr
+    # total_kl = torch.sum(kl_loss)  # 스칼라로 변환
+    # return avg_mse + total_kl, avg_snr
+    return avg_mse, avg_snr
 
 @torch.no_grad()
 def mlloss(noisy: torch.Tensor, enhanced: torch.Tensor, clean: torch.Tensor):
@@ -26,15 +27,3 @@ def mlloss(noisy: torch.Tensor, enhanced: torch.Tensor, clean: torch.Tensor):
 
     reward = torch.clamp(enh_pesq - orig_pesq, min=0.0)  # [B]
     return reward.to(clean.device)
-
-
-
-
-
-
-
-
-
-
-
-

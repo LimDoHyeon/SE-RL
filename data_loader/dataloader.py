@@ -1,3 +1,4 @@
+
 # src/data_loader/dataloader.py
 """
 AudioDataset & helper utilities for SERL project
@@ -93,7 +94,7 @@ class AudioDataset(Dataset):
     def __init__(
         self,
         noisy_root: str, clean_root: str, list_file: str,
-        segment_len: Optional[int] = 16384, random_crop: bool = True,
+        segment_len: Optional[int] = None, random_crop: bool = True,
         scale_aug: bool = False, lowpass_aug: bool = False,
         sample_rate: int = 16000,):
 

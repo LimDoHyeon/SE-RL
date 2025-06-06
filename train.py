@@ -25,14 +25,7 @@ def setup_logging():
 
 
 def main(args):
-    # GPU 개수 감지
-    num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-
-    # 디바이스 설정: 첫번째 GPU 또는 CPU
-    if num_gpus >= 1:
-        device = torch.device("cuda:0")
-    else:
-        device = torch.device("cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     logger = setup_logging()
 
@@ -84,9 +77,6 @@ def main(args):
         times=args.times,
         normalize=args.normalize
     ).to(device)
-
-    if num_gpus >= 2:
-        model = DataParallel(model, device_ids=list(range(num_gpus)))
 
     # Optimizer & Scheduler 설정
     optimizer = torch.optim.Adam(

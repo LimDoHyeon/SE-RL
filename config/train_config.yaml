@@ -22,7 +22,7 @@ times: 4
 weights: 0
 mul: 0
 normalize: 0
-episod: 0
+episod: 10
 
 # --- 학습 --- #
 epochs: 300

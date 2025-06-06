@@ -62,7 +62,7 @@ class Trainer:
         # Logging
         self.logger = logging.getLogger(opt.logger_name)
         self.logger.info(
-            "Model parameters: %.3f Mb", check_parameters(self._unwrap(self.model))
+            "Model parameters: %.3f Mb", check_parameters(check_parameters(self.model))
         )
 
         # Resume checkpoint if requested
@@ -84,11 +84,6 @@ class Trainer:
         while self.cur_epoch < self.total_epoch:
             self.cur_epoch += 1
 
-            # DDP sampler epoch shuffle, if applicable
-            sampler = getattr(self.train_dataloader, "sampler", None)
-            if sampler is not None and hasattr(sampler, "set_epoch"):
-                sampler.set_epoch(self.cur_epoch)
-
             tr_loss, _ = self._train_one_epoch(self.cur_epoch)
             val_loss, _ = self._validate(self.cur_epoch)
 
@@ -99,19 +94,16 @@ class Trainer:
                 self.scheduler.step()
 
             # WandB logging (master only)
-            if self.wandb_run is not None and (not dist.is_initialized() or dist.get_rank() == 0):
+            if self.wandb_run is not None:
                 self.wandb_run.log({"epoch": self.cur_epoch, "train_loss": tr_loss, "val_loss": val_loss})
 
-            # Early‑stopping & checkpointing (rank 0)
-            master = (not dist.is_initialized()) or dist.get_rank() == 0
-            if master:
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    no_improve = 0
-                    self._save_checkpoint(self.cur_epoch, tr_loss, val_loss)
-                else:
-                    no_improve += 1
-                    self.logger.info("No improvement for %d epochs", no_improve)
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                no_improve = 0
+                self._save_checkpoint(self.cur_epoch, tr_loss, val_loss)
+            else:
+                no_improve += 1
+                self.logger.info("No improvement for %d epochs", no_improve)
                 if no_improve >= self.early_stop:
                     self.logger.info("Early stopping after %d epochs", self.cur_epoch)
                     break
@@ -152,12 +144,15 @@ class Trainer:
                 for i in range(self.episod):
                     self.optimizer.zero_grad(set_to_none=True)
                     G = total_rewards[i]
-                    gamma = 0.1
+                    base_gamma = 0.1
                     for j in range(i + 1, self.episod):
-                        G = G + gamma * total_rewards[j]
-                        gamma *= gamma
+                        gamma = base_gamma
+                        G = total_rewards[i]
+                        for j in range(i+1, self.episod):
+                            G = G + gamma * total_rewards[j]
+                            gamma = gamma * base_gamma
 
-                    action_prob = 0.0001 * torch.sum(total_action_prob[i], dim=1)
+                    action_prob = torch.sum(total_action_prob[i], dim=1)
                     state_value = -1.0 * torch.mean(G * action_prob)
 
                     # debugging
@@ -173,7 +168,7 @@ class Trainer:
                     loss.backward()
 
                     if self.clip_norm > 0:
-                        torch.nn.utils.clip_grad_norm_(self._unwrap(self.model).parameters(), self.clip_norm)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_norm)
                     self.optimizer.step()
 
                 loss_dist, loss_snr_rl = Loss(total_outs[-1], total_outputs[-1], data_clean)
