@@ -22,8 +22,12 @@ def Loss(gauss, data_predict, data_orig):
 @torch.no_grad()
 def mlloss(noisy: torch.Tensor, enhanced: torch.Tensor, clean: torch.Tensor):
     # PESQ wrapper는 CPU tensor 입력을 기대하므로 detach→cpu
-    orig_pesq = pesq(noisy.detach().cpu(), clean.detach().cpu())  # [B]
-    enh_pesq = pesq(enhanced.detach().cpu(), clean.detach().cpu())  # [B]
+    noisy_1d    = noisy.detach().cpu().squeeze(1)      # [B, T]
+    enhanced_1d = enhanced.detach().cpu().squeeze(1)   # [B, T]
+    clean_1d = clean.detach().cpu().squeeze(1)  # [B, T]
+
+    orig_pesq = pesq(noisy_1d,    clean_1d)    # [B]
+    enh_pesq = pesq(enhanced_1d, clean_1d)  # [B]
 
     reward = torch.clamp(enh_pesq - orig_pesq, min=0.0)  # [B]
     return reward.to(clean.device)

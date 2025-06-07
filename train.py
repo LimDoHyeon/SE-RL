@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from data_loader.dataloader import AudioDataset
-from model.modules import Base_model
+from model.modules2 import DynamicFilterModel
 import trainingmodule
 from utils.util import update_namespace_from_yaml
 import wandb
@@ -69,13 +69,15 @@ def main(args):
     )
 
     # 모델 생성 및 DataParallel 래핑
-    model = Base_model(
-        in_nc=args.in_nc,
-        out_nc=args.out_nc,
-        nf=args.nf,
-        gc=args.ns,
-        times=args.times,
-        normalize=args.normalize
+    model = DynamicFilterModel(
+        in_nc=args.in_nc,  # 입력 채널 (보통 1)
+        c=args.c,  # 내부 채널 수 (논문의 c)
+        w=args.w,  # FE 커널 크기 (논문의 w)
+        Ns=args.Ns,  # SE 블록 개수 (논문의 N_s)
+        Nf=args.Nf,  # FG agent 블록 개수 (논문의 N_f)
+        gc=args.gc,  # FG agent growth 채널 (논문의 n_r)
+        nr=args.nr,  # RDB 내부 dilated conv 수 (논문의 n_r)
+        m=args.m  # 동적 필터 커널 크기 (논문의 m)
     ).to(device)
 
     # Optimizer & Scheduler 설정

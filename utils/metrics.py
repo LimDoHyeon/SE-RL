@@ -2,7 +2,7 @@
 from typing import Union
 import torch
 import numpy as np
-from pesq import pesq  # Itu‑T P.862 implementation (pip install pesq)
+from pesq import pesq, NoUtterancesError  # Itu‑T P.862 implementation (pip install pesq)
 
 __all__ = ["pesq_wrapper"]
 
@@ -27,5 +27,11 @@ def pesq_wrapper(clean: torch.Tensor, degraded: torch.Tensor, sr: int = 16000):
     assert clean.shape == degraded.shape, "clean & degraded must match in shape"
     scores = []
     for c, d in zip(clean, degraded):
-        scores.append(pesq(sr, _to_numpy(c), _to_numpy(d), "wb"))
+        ref = _to_numpy(c)
+        deg = _to_numpy(d)
+        try:
+            score = pesq(sr, ref, deg, 'wb')
+        except NoUtterancesError:
+            score = 0.0
+        scores.append(score)
     return torch.tensor(scores).mean()

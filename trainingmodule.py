@@ -8,8 +8,7 @@ without further changes.
 """
 from __future__ import annotations
 
-import logging
-import time
+import logging, time, sys
 from pathlib import Path
 
 import torch
@@ -62,12 +61,14 @@ class Trainer:
         # Logging
         self.logger = logging.getLogger(opt.logger_name)
         self.logger.info(
-            "Model parameters: %.3f Mb", check_parameters(check_parameters(self.model))
+            "Model parameters: %.3f Mb", check_parameters(self.model)
         )
 
         # Resume checkpoint if requested
-        if self.resume_state:
+        if self.resume_state and getattr(opt, "resume_path", ""):
             self._load_checkpoint(opt.resume_path, partial=(self.resume_state == 2))
+        elif self.resume_state:
+            self.logger.warning("resume_state set but resume_path is empty—skipping checkpoint load.")
 
         # Internal trackers
         self.cur_epoch: int = 0
@@ -77,8 +78,7 @@ class Trainer:
     # ------------------------------------------------------------------
     def run(self) -> None:
         """Full training schedule across self.total_epoch epochs."""
-        best_val_loss, _ = self._validate(self.cur_epoch)  # baseline before training
-        self.logger.info("Starting training ‑ baseline val_loss=%.4f", best_val_loss)
+        best_val_loss = float("inf")
         no_improve = 0
 
         while self.cur_epoch < self.total_epoch:
@@ -110,7 +110,6 @@ class Trainer:
 
     # Compatibility wrappers (for older scripts)
     # --------------------------------------------------------------
-    from tqdm import tqdm
 
     def train(self, epoch: int) -> tuple[float, float]:
         """한 epoch 학습 수행 (tqdm으로 콘솔에 바로 진행률 표시)"""
@@ -121,7 +120,15 @@ class Trainer:
         start_time = time.time()
 
         # tqdm으로 데이터로더를 래핑하면 루프 돌면서 콘솔에 자동으로 프로그레스 바가 찍힙니다.
-        loop = tqdm(self.train_dataloader, desc=f"[Train][Epoch {epoch}]", unit="batch")
+        loop = tqdm(
+            self.train_dataloader,
+            desc=f"[Train][Epoch {epoch}]",
+            unit="batch",
+            ascii=True,
+            dynamic_ncols=True,
+            disable=False,
+            file=sys.stdout,
+        )
         for step, (data_noisy, data_clean) in enumerate(loop, 1):
             data_noisy = data_noisy.to(self.device, non_blocking=True)
             data_clean = data_clean.to(self.device, non_blocking=True)
@@ -210,7 +217,15 @@ class Trainer:
         start_time = time.time()
 
         # ── `tqdm`으로 데이터로더를 래핑 ──
-        loop = tqdm(self.val_dataloader, desc=f"[Valid][Epoch {epoch}]", leave=False)
+        loop = tqdm(
+            self.val_dataloader,
+            desc=f"[Valid][Epoch {epoch}]",
+            leave=False,
+            ascii=True,
+            dynamic_ncols=True,
+            disable=False,
+            file=sys.stdout,
+        )
         with torch.no_grad():
             for step, (data_noisy, data_clean) in enumerate(loop, 1):
                 data_noisy = data_noisy.to(self.device, non_blocking=True)
@@ -278,7 +293,8 @@ class Trainer:
                         gamma *= gamma
 
                     # 정책 손실(state value)
-                    action_prob = 0.0001 * torch.sum(total_action_prob[i], dim=1)
+                    # action_prob = 0.0001 * torch.sum(total_action_prob[i], dim=1)
+                    action_prob = total_action_prob[i]  # [B]
                     state_value = -1.0 * torch.mean(G * action_prob)
 
                     # 왜곡 손실(signal distortion loss)

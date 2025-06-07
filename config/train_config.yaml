@@ -12,42 +12,43 @@ scale: 0
 low_pass: 0
 interpolate: 0
 
+# --- DataLoader 설정 --- #
+batch_size:   16
+num_workers:  16    # <-- 여기에 원하는 워커 수를 지정
+pin_memory:   true # (필요에 따라 추가)
+
 # --- 모델 --- #
-model: 1
-in_nc: 1
-out_nc: 1
-nf: 128
-ns: 64
-times: 4
-weights: 0
-mul: 0
-normalize: 0
-episod: 10
+# model: 1             # (원래 있던 키, 필요 없으면 삭제)
+in_nc: 1              # 입력 채널 (noisy waveform 채널 수)
+c:   64               # FE/SE 채널 수 (논문의 c)
+w:   3                # FE 커널 크기 (논문의 w)
+Ns:  3                # SE 블록 개수 (논문의 N_s)
+Nf:  4                # FG agent 블록 개수 (논문의 N_f)
+gc:  32               # FG agent growth 채널 (RDB 내부 growth)
+nr:  4                # 각 RDB 블록 내 dilated conv 개수 (논문의 n_r)
+m:   3                # 동적 필터 커널 크기 (논문의 m)
+normalize: true       # (필요하다면, SE/FG agent에서 LayerNorm 적용 여부)
 
-# --- 학습 --- #
-epochs: 300
-early_stop: 10
+# --- 옵티마이저 & 학습 --- #
+epochs:          100
+lr:              !!float 1e-3
+momentum:        0.9
+l2:              0.0
+scheduler_factor:    0.5
+scheduler_patience:  2
+scheduler_min_lr:    1e-8
 max_norm: 3
-resume_state: 0
-resume_path: ""
+weights: 1.0
+episod: 1
 
-batch_size: 32
-num_workers: 6
-
-optimizer: "adam"
-lr: 0.001
-momentum: 0.0
-l2: 0.0
-scheduler_factor: 0.5
-scheduler_patience: 2
-scheduler_min_lr: 1.0e-8
-
-save_folder: "exp/temp"
-
-print_freq: 1000
-logger_name: "asuper"
-logger_path: "exp/log"
-logger_screen: false
-logger_tofile: true
+# --- 저장 & 로깅 --- #
+save_folder:    "exp/temp"
+early_stop:      10
+resume_state:  1
+print_freq:     500
+logger_name:    "asuper"
+logger_path:    "exp/log"
+logger_screen:  false
+logger_tofile:  true
 
 experiment_name: "SERL-exp"
