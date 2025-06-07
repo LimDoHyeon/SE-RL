@@ -14,10 +14,10 @@ def Loss(gauss, data_predict, data_orig):
     snr = 10 * torch.log10( (s_l2 + 1e-8) / (n_l2 + 1e-8) )
 
     avg_snr = torch.mean(snr)
-    avg_mse = torch.mean(torch.sqrt(n_l2 + 1e-8))  # [B] → 평균
+    avg_rmse = torch.mean(torch.sqrt(n_l2 + 1e-8))  # [B] → 평균
     # total_kl = torch.sum(kl_loss)  # 스칼라로 변환
     # return avg_mse + total_kl, avg_snr
-    return avg_mse, avg_snr
+    return avg_rmse, avg_snr
 
 @torch.no_grad()
 def mlloss(noisy: torch.Tensor, enhanced: torch.Tensor, clean: torch.Tensor):
