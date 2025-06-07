@@ -1,6 +1,6 @@
 import torch
 from utils.metrics import pesq_wrapper as pesq
-from torchmetrics.audio import ScaleInvariantSignalDistortionRatio as sisdr
+from torchmetrics.functional.audio import scale_invariant_signal_distortion_ratio as sisdr
 
 PESQ_WEIGHT = 0.7
 SISDR_WEIGHT = 0.3
