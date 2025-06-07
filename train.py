@@ -42,7 +42,8 @@ def main(args):
         noisy_root=args.train_noisy_data_path,
         clean_root=args.train_clean_data_path,
         list_file=args.train_file,
-        sample_rate=args.sample_rate
+        sample_rate=args.sample_rate,
+        dataset_length=args.dataset_length,
     )
     val_dataset = AudioDataset(
         noisy_root=args.valid_noisy_data_path,

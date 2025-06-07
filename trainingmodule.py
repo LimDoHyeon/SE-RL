@@ -129,9 +129,13 @@ class Trainer:
             disable=False,
             file=sys.stdout,
         )
+        max_steps = len(self.train_dataloader)
         for step, (data_noisy, data_clean) in enumerate(loop, 1):
-            data_noisy = data_noisy.to(self.device, non_blocking=True)
-            data_clean = data_clean.to(self.device, non_blocking=True)
+            if step > max_steps:
+                break
+            else:
+                data_noisy = data_noisy.to(self.device, non_blocking=True)
+                data_clean = data_clean.to(self.device, non_blocking=True)
 
             if self.episod > 0:
                 # RL 모드

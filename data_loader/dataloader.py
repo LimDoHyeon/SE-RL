@@ -96,7 +96,7 @@ class AudioDataset(Dataset):
         noisy_root: str, clean_root: str, list_file: str,
         segment_len: Optional[int] = None, random_crop: bool = True,
         scale_aug: bool = False, lowpass_aug: bool = False,
-        sample_rate: int = 16000,):
+        sample_rate: int = 16000, dataset_length: int = 4000):
 
         super().__init__()
 
@@ -107,6 +107,7 @@ class AudioDataset(Dataset):
         self.scale_aug = scale_aug
         self.lowpass_aug = lowpass_aug
         self.sample_rate = sample_rate
+        self.dataset_length = dataset_length
 
         # ------------ read file list ------------ #
         with open(list_file, "r", encoding="utf-8") as f:
@@ -142,6 +143,8 @@ class AudioDataset(Dataset):
             wav = wav[:1, :]
         return wav
 
+    def __len__(self):
+        return min(self.dataset_length, len(self.file_pairs))
 
     # ------------------------------------------- #
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:

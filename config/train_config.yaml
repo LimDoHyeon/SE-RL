@@ -16,6 +16,7 @@ interpolate: 0
 batch_size:   16
 num_workers:  16    # <-- 여기에 원하는 워커 수를 지정
 pin_memory:   true # (필요에 따라 추가)
+dataset_length: 3000
 
 # --- 모델 --- #
 # model: 1             # (원래 있던 키, 필요 없으면 삭제)
