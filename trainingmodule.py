@@ -18,6 +18,7 @@ import torch.distributed as dist
 from utils.util import check_parameters
 from model.loss import Loss, mlloss
 from tqdm import tqdm
+from utils.metrics import pesq_wrapper as pesq
 
 
 class Trainer:
@@ -76,36 +77,40 @@ class Trainer:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def run(self) -> None:
-        """Full training schedule across self.total_epoch epochs."""
-        best_val_loss = float("inf")
+    def run(self):
+        best_val_loss = float('inf')
         no_improve = 0
-
         while self.cur_epoch < self.total_epoch:
             self.cur_epoch += 1
 
-            tr_loss, _ = self._train_one_epoch(self.cur_epoch)
-            val_loss, _ = self._validate(self.cur_epoch)
+            # 1) 학습
+            tr_loss, tr_snr = self._train_one_epoch(self.cur_epoch)
 
-            # Scheduler step
-            if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                self.scheduler.step(val_loss)
-            else:
-                self.scheduler.step()
+            # 2) 검증
+            val_loss, val_snr, val_pesq = self._validate(self.cur_epoch)
 
-            # WandB logging (master only)
+            # 3) WandB 로깅
             if self.wandb_run is not None:
-                self.wandb_run.log({"epoch": self.cur_epoch, "train_loss": tr_loss, "val_loss": val_loss})
+                self.wandb_run.log({
+                    "epoch": self.cur_epoch,
+                    "train_loss": tr_loss,
+                    "train_snr": tr_snr,
+                    "val_loss": val_loss,
+                    "val_snr": val_snr,
+                    "val_pesq": val_pesq,
+                })
 
+            # 4) Early stopping: 10 epoch 이하에서는 카운트하지 않음
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 no_improve = 0
                 self._save_checkpoint(self.cur_epoch, tr_loss, val_loss)
             else:
-                no_improve += 1
-                self.logger.info("No improvement for %d epochs", no_improve)
+                # 에포크 10 이후부터만 no_improve 증가
+                if self.cur_epoch > 10:
+                    no_improve += 1
                 if no_improve >= self.early_stop:
-                    self.logger.info("Early stopping after %d epochs", self.cur_epoch)
+                    self.logger.info("Early stopping at epoch %d", self.cur_epoch)
                     break
 
     # Compatibility wrappers (for older scripts)
@@ -352,23 +357,36 @@ class Trainer:
 
     def _validate(self, epoch: int):
         self.model.eval()
-        val_loss, val_snr = 0.0, 0.0
-        with torch.inference_mode():
-            for data_noisy, data_clean in self.val_dataloader:
-                data_noisy = data_noisy.to(self.device, non_blocking=True)
-                data_clean = data_clean.to(self.device, non_blocking=True)
-                outs, outputs, _ = self.model(data_noisy)
-                loss_dist, loss_snr = Loss(outs, outputs, data_clean)
-                val_loss += loss_dist.item()
-                val_snr += loss_snr.item()
-        nb = max(1, len(self.val_dataloader))
-        val_loss /= nb
-        val_snr /= nb
+        total_loss, total_snr, total_pesq = 0.0, 0.0, 0.0
 
-        master = (not dist.is_initialized()) or dist.get_rank() == 0
-        if master:
-            self.logger.info("[E%03d] VAL loss=%.4f snr=%.2f dB", epoch, val_loss, val_snr)
-        return val_loss, val_snr
+        with torch.inference_mode():
+            for noisy, clean in self.val_dataloader:
+                noisy = noisy.to(self.device, non_blocking=True)
+                clean = clean.to(self.device, non_blocking=True)
+
+                outs, enhanced, _ = self.model(noisy)
+                # RMSE = Loss 측정
+                loss_dist, loss_snr_batch = Loss(outs, enhanced, clean)
+                total_loss += loss_dist.item()
+                total_snr += loss_snr_batch.item()
+
+                # PESQ 계산
+                enh_1d      = enhanced.detach().cpu().squeeze(1)
+                clean_1d    = clean.detach().cpu().squeeze(1)
+                batch_pesq  = pesq(enh_1d, clean_1d).mean().item()
+                total_pesq += batch_pesq
+
+        count = max(1, len(self.val_dataloader))
+        avg_loss = total_loss / count
+        avg_snr  = total_snr  / count
+        avg_pesq = total_pesq / count
+
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            self.logger.info(
+                "[Epoch %03d] VAL LOSS(RMSE)=%.4f  PESQ=%.2f  SNR=%.2f dB",
+                epoch, avg_loss, avg_pesq, avg_snr
+            )
+        return avg_loss, avg_snr, avg_pesq
 
     # ------------------------------------------------------------------
     # Utilities
