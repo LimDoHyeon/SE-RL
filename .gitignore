@@ -3,3 +3,4 @@ data
 wandb
 __pycache__
 utils.__pycache__
+exp
