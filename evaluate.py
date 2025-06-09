@@ -152,8 +152,8 @@ if __name__ == "__main__":
     p.add_argument("--noisy_root", default="data/Valentini/valentini/")
     p.add_argument("--clean_root", default="data/Valentini/valentini/")
     p.add_argument("--list_file", default="data/Valentini/valentini/test1.lst")
-    p.add_argument("--checkpoint", default="exp/temp/last_nnet_iter17_trloss0.0023_valoss0.0007.pt")
-    p.add_argument("--csv_out", default="exp/temp/eval_metrics.csv")
+    p.add_argument("--checkpoint", "-ckpt", default="exp/temp_old/last_nnet_iter17_trloss0.0023_valoss0.0007.pt")
+    p.add_argument("--csv_out", "-o", default="exp/temp_old/eval_metrics.csv")
     args = p.parse_args()
 
     main(
