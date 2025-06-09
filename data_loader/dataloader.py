@@ -96,7 +96,8 @@ class AudioDataset(Dataset):
         noisy_root: str, clean_root: str, list_file: str,
         segment_len: Optional[int] = None, random_crop: bool = True,
         scale_aug: bool = False, lowpass_aug: bool = False,
-        sample_rate: int = 16000, dataset_length: int = 4000):
+        sample_rate: int = 16000, dataset_length: int = 4000,
+        noisy_substr: str = "/noisy/", clean_substr: str = "/clean/"):
 
         super().__init__()
 
@@ -114,15 +115,29 @@ class AudioDataset(Dataset):
             raw = [ln.strip() for ln in f if ln.strip()]
 
         self.file_pairs: List[Tuple[str, str]] = []
-        for line in raw:
-            fields = line.split()
-            if len(fields) == 1:
-                utt = fields[0]
-                self.file_pairs.append((utt, utt))
-            elif len(fields) == 2:
-                self.file_pairs.append(tuple(fields))
-            else:
-                raise ValueError(f"Invalid list line: {line}")
+        with open(list_file, "r", encoding="utf-8") as f:
+            for ln in f:
+                if not ln.strip():
+                    continue
+                toks = ln.strip().split()
+                if len(toks) == 1:
+                    noisy_rel = toks[0]
+                    # auto‑infer clean_rel
+                    clean_rel = noisy_rel.replace(noisy_substr, clean_substr, 1)
+                    if noisy_rel == clean_rel:
+                        raise ValueError(
+                            f"Auto‑inferred clean path == noisy path for line: {ln.strip()}\n"
+                            "Check substr arguments or list format."
+                        )
+                elif len(toks) >= 2:
+                    noisy_rel, clean_rel = toks[0], toks[1]
+                else:
+                    raise ValueError(f"Malformed line in list file: {ln}")
+
+                self.file_pairs.append((noisy_rel, clean_rel))
+
+        if dataset_length is not None:
+            self.file_pairs = self.file_pairs[: dataset_length]
 
     # ------------------------------------------- #
     def __len__(self) -> int:
