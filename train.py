@@ -13,6 +13,7 @@ import trainingmodule
 from utils.util import update_namespace_from_yaml
 import wandb
 
+RUN_ID = "vsgoftxw"
 
 def setup_logging():
     """기본 로그 설정: single-process이므로 INFO 레벨로 고정"""
@@ -33,6 +34,7 @@ def main(args):
     wandb_run = wandb.init(
         project="SE-RL",
         name=args.experiment_name,
+        id=RUN_ID,
         entity="do-hyeon-gwangju-institute-of-science-and-technology",
         config=vars(args)
     )
@@ -68,6 +70,18 @@ def main(args):
         pin_memory=True,
         drop_last=False
     )
+
+    # debug
+    """
+    print('debug start')
+    ds = AudioDataset(noisy_root=args.train_noisy_data_path,
+        clean_root=args.train_clean_data_path,
+        list_file=args.train_file,)
+    noisy, clean = ds[0]
+    print(torch.mean(torch.abs(noisy - clean)))
+    print('debug end')
+    """
+
 
     # 모델 생성 및 DataParallel 래핑
     model = DynamicFilterModel(
@@ -113,7 +127,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SE-RL DDP trainer")
     parser.add_argument("--config", "-c", type=str, default="config/train_config.yaml",
                         help="YAML config file")
-    parser.add_argument("--resume_path", "-r", type=str, default="",
+    parser.add_argument("--resume_path", "-r", type=str, default="exp/temp_old/nnet_iter60_trloss0.0216_valoss0.0245.pt",
                         help="Checkpoint to resume (overrides YAML)")
     args = parser.parse_args()
     # CLI에서 받은 resume_path 따로 저장

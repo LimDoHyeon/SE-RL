@@ -21,6 +21,11 @@ import torch
 import torchaudio
 from torch.utils.data import Dataset
 
+__all__ = [
+    "AudioDataset",
+    "pad_collate",
+    "worker_init_fn",
+]
 
 # -------------------- Helper functions -------------------- #
 def set_deterministic_seed(seed: int) -> None:
@@ -36,19 +41,8 @@ def worker_init_fn(worker_id: int) -> None:
     set_deterministic_seed(base_seed + worker_id)
 
 
-def pad_collate(batch: List[Tuple[torch.Tensor, torch.Tensor]]
-                ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Collate function that zero-pads variable-length waveforms to the length of
-    the longest sample in the mini-batch.
-
-    Returns
-    -------
-    noisy_batch : Tensor  [B, 1, T_max]
-    clean_batch : Tensor  [B, 1, T_max]
-    lengths     : Tensor  [B]      valid lengths before padding
-    """
-    noisy, clean = zip(*batch)                        # tuple of tensors
+def pad_collate(batch):
+    noisy, clean, rels = zip(*batch)            # 3-튜플 언패킹
     lengths = torch.tensor([x.size(1) for x in noisy], dtype=torch.long)
 
     max_len = int(lengths.max())
@@ -60,7 +54,7 @@ def pad_collate(batch: List[Tuple[torch.Tensor, torch.Tensor]]
         padded_noisy[i, :, :T] = n
         padded_clean[i, :, :T] = c
 
-    return padded_noisy, padded_clean, lengths
+    return padded_noisy, padded_clean, rels      # ← lengths 대신 rels 반환
 
 
 # -------------------- Dataset -------------------- #
@@ -166,9 +160,7 @@ class AudioDataset(Dataset):
         noisy_rel, clean_rel = self.file_pairs[idx]
         noisy_path = os.path.join(self.noisy_root, noisy_rel)
         clean_path = os.path.join(self.clean_root, clean_rel)
+        noisy, sr = torchaudio.load(noisy_path)
+        clean, _ = torchaudio.load(clean_path)
 
-        noisy = self._load_audio(noisy_path, self.sample_rate)
-        clean = self._load_audio(clean_path, self.sample_rate)
-
-        assert noisy.shape == clean.shape, "Shape mismatch after cropping."
-        return noisy.contiguous(), clean.contiguous()
+        return noisy, clean, noisy_rel  # ← rel_path 추가

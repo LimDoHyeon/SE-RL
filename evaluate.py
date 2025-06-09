@@ -19,8 +19,9 @@ import csv
 import logging
 import os
 from typing import Dict, List
+from pathlib import Path
 
-import torch
+import torch, torchaudio
 from torch.nn import DataParallel
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -47,21 +48,19 @@ def _evaluate(
     device: torch.device,
     sr: int,
     log: logging.Logger,
+    out_dir: Path,
+    gen_wav: int,
 ):
     """Iterates over `loader`, returns (avg_dict, rows_list)."""
 
     model.eval()
     rows: List[Dict[str, float]] = []
+    saved = 0
 
-    for noisy, clean, _ in tqdm(loader, desc="Evaluating", unit="batch"):
+    for noisy, clean, rels in tqdm(loader, desc="Evaluating", unit="batch"):
         noisy, clean = noisy.to(device), clean.to(device)
-
-        # forward – handle variable tuple length
         out = model(noisy, deterministic=True)
-        if isinstance(out, (list, tuple)):
-            enh = out[1] if len(out) >= 2 else out[0]
-        else:
-            enh = out
+        enh = out[1] if isinstance(out, (list, tuple)) and len(out) >= 2 else out if not isinstance(out,(list, tuple)) else out[0]
 
         # metrics ---------------------------------------------------------- #
         row = {
@@ -73,6 +72,23 @@ def _evaluate(
         # csig, cbak = composite_wrap(clean, enh, sr)
         # row.update({"csig": csig.item(), "cbak": cbak.item()})
         rows.append(row)
+
+    # waveform saving --------------------------------------------- #
+    if gen_wav > 0 and saved < gen_wav:
+        batch_size = noisy.size(0)
+        for b in range(batch_size):
+            if saved >= gen_wav:
+                break
+            rel_path = rels[b]
+            # ensure Path type
+            rel_path = rel_path if isinstance(rel_path, str) else rel_path.decode()
+            enh_path = out_dir / f"enh_{rel_path}"
+            noisy_path_out = out_dir / f"noisy_{rel_path}"
+            enh_path.parent.mkdir(parents=True, exist_ok=True)
+            noisy_path_out.parent.mkdir(parents=True, exist_ok=True)
+            torchaudio.save(enh_path.as_posix(), enh[b].cpu(), sr)
+            torchaudio.save(noisy_path_out.as_posix(), noisy[b].cpu(), sr)
+            saved += 1
 
     # aggregate
     avg = {k: sum(r[k] for r in rows) / len(rows) for k in rows[0]}
@@ -86,7 +102,10 @@ def _evaluate(
 
 
 def main(*, config_file: str, noisy_root: str, clean_root: str, list_file: str,
-         checkpoint: str, csv_out: str):
+         checkpoint: str, out_dir: str, generate_waveform: int):
+
+    out_dir_p = Path(out_dir).resolve()
+    out_dir_p.mkdir(parents=True, exist_ok=True)
 
     log = _logger()
     args = update_namespace_from_yaml(argparse.Namespace(), config_file)
@@ -132,35 +151,37 @@ def main(*, config_file: str, noisy_root: str, clean_root: str, list_file: str,
         model = DataParallel(model)
 
     # evaluate ------------------------------------------------------------- #
-    avg, rows = _evaluate(model, dl, device, sr, log)
+    avg, rows = _evaluate(model, dl, device, sr, log, out_dir_p, generate_waveform)
 
-    # save CSV ------------------------------------------------------------- #
-    os.makedirs(os.path.dirname(csv_out), exist_ok=True)
+    # save metrics CSV -------------------------------------------------- #
+    csv_path = out_dir_p / "metrics.csv"
     # keys = ["rmse", "segSNR", "siSDR", "pesq", "csig", "cbak"]
     keys = ["rmse", "segSNR", "siSDR", "pesq"]
-    with open(csv_out, "w", newline="") as f:
+    with open(csv_path, "w", newline="") as f:
         wr = csv.DictWriter(f, fieldnames=keys)
-        wr.writeheader()
-        wr.writerows(rows)
-        wr.writerow({k: avg[k] for k in keys})
-    log.info("Metrics saved → %s", csv_out)
+        wr.writeheader(); wr.writerows(rows); wr.writerow({k: avg[k] for k in keys})
+    log.info("Metrics CSV saved → %s", csv_path)
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser("SERL evaluator – path options")
-    p.add_argument("--config", "-c", default="config/train_config.yaml")
-    p.add_argument("--noisy_root", default="data/Valentini/valentini/")
-    p.add_argument("--clean_root", default="data/Valentini/valentini/")
-    p.add_argument("--list_file", default="data/Valentini/valentini/test1.lst")
-    p.add_argument("--checkpoint", "-ckpt", default="exp/temp_old/last_nnet_iter17_trloss0.0023_valoss0.0007.pt")
-    p.add_argument("--csv_out", "-o", default="exp/temp_old/eval_metrics.csv")
-    args = p.parse_args()
+    if __name__ == "__main__":
+        p = argparse.ArgumentParser("SERL evaluator – paths & options")
+        p.add_argument("--config", "-c", default="config/train_config.yaml")
+        p.add_argument("--noisy_root", default="data/Valentini/valentini")
+        p.add_argument("--clean_root", default="data/Valentini/valentini")
+        p.add_argument("--list_file", default="data/Valentini/valentini/test1.lst")
+        p.add_argument("--checkpoint", "-ckpt", default="exp/temp/last_nnet_iter17_trloss0.0023_valoss0.0007.pt")
+        p.add_argument("--out_dir", "-o", default="exp/temp/eval_out")
+        p.add_argument("--generate_waveform", "-gen", type=int, default=0,
+                       help="save first N samples (noisy & enhanced) as wav")
+        args = p.parse_args()
 
-    main(
-        config_file=args.config,
-        noisy_root=args.noisy_root,
-        clean_root=args.clean_root,
-        list_file=args.list_file,
-        checkpoint=args.checkpoint,
-        csv_out=args.csv_out,
-    )
+        main(
+            config_file=args.config,
+            noisy_root=args.noisy_root,
+            clean_root=args.clean_root,
+            list_file=args.list_file,
+            checkpoint=args.checkpoint,
+            out_dir=args.out_dir,
+            generate_waveform=args.generate_waveform,
+        )

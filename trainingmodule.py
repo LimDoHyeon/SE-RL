@@ -236,7 +236,8 @@ class Trainer:
             file=sys.stdout,
         )
         with torch.no_grad():
-            for step, (data_noisy, data_clean) in enumerate(loop, 1):
+            # for step, (data_noisy, data_clean) in enumerate(loop, 1):
+            for step, (data_noisy, data_clean, *__) in enumerate(self.val_dataloader, 1):
                 data_noisy = data_noisy.to(self.device, non_blocking=True)
                 data_clean = data_clean.to(self.device, non_blocking=True)
 
@@ -269,7 +270,8 @@ class Trainer:
         epoch_loss, epoch_snr = 0.0, 0.0
         start_time = time.time()
 
-        for step, (data_noisy, data_clean) in enumerate(self.train_dataloader, 1):
+        # for step, (data_noisy, data_clean) in enumerate(self.train_dataloader, 1):
+        for step, (data_noisy, data_clean, *__) in enumerate(self.train_dataloader, 1):
             data_noisy = data_noisy.to(self.device, non_blocking=True)
             data_clean = data_clean.to(self.device, non_blocking=True)
 
@@ -360,7 +362,8 @@ class Trainer:
         total_loss, total_snr, total_pesq = 0.0, 0.0, 0.0
 
         with torch.inference_mode():
-            for noisy, clean in self.val_dataloader:
+            # for noisy, clean in self.val_dataloader:
+            for noisy, clean, *__ in self.val_dataloader:
                 noisy = noisy.to(self.device, non_blocking=True)
                 clean = clean.to(self.device, non_blocking=True)
 
