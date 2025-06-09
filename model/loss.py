@@ -41,8 +41,8 @@ def mlloss(noisy: torch.Tensor, enhanced: torch.Tensor, clean: torch.Tensor,
                                           enhanced_1d.to(device),
                                           clean_1d.to(device))
 
-    sisdr_noisy = sisdr(noisy_gpu, clean_gpu, reduction='none')  # [B]
-    sisdr_enh = sisdr(enhanced_gpu, clean_gpu, reduction='none')  # [B]
+    sisdr_noisy = sisdr(noisy_gpu, clean_gpu)  # [B]
+    sisdr_enh = sisdr(enhanced_gpu, clean_gpu)  # [B]
     sisdr_reward = torch.clamp(sisdr_enh - sisdr_noisy, min=0.0)  # [B]
 
     # total reward
