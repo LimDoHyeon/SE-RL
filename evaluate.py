@@ -120,6 +120,7 @@ def main(*, config_file: str, noisy_root: str, clean_root: str, list_file: str,
         segment_len=None,
         random_crop=False,
         dataset_length=1 << 60,
+        subset_seed=args.subset_seed,
     )
     dl = DataLoader(
         ds,
@@ -170,9 +171,9 @@ if __name__ == "__main__":
         p.add_argument("--noisy_root", default="data/Valentini/valentini")
         p.add_argument("--clean_root", default="data/Valentini/valentini")
         p.add_argument("--list_file", default="data/Valentini/valentini/test1.lst")
-        p.add_argument("--checkpoint", "-ckpt", default="exp/temp/last_nnet_iter17_trloss0.0023_valoss0.0007.pt")
-        p.add_argument("--out_dir", "-o", default="exp/temp/eval_out")
-        p.add_argument("--generate_waveform", "-gen", type=int, default=0,
+        p.add_argument("--checkpoint", "-ckpt", default="exp/serl-bs32/nnet_iter92_trloss0.0213_valoss0.0245.pt")
+        p.add_argument("--out_dir", "-o", default="exp/eval_bs32/eval_out_epo92")
+        p.add_argument("--generate_waveform", "-gen", type=int, default=10,
                        help="save first N samples (noisy & enhanced) as wav")
         args = p.parse_args()
 

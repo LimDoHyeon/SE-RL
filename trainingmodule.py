@@ -82,6 +82,8 @@ class Trainer:
         no_improve = 0
         while self.cur_epoch < self.total_epoch:
             self.cur_epoch += 1
+            if hasattr(self.train_dataloader.dataset, "reseed_subset"):
+                self.train_dataloader.dataset.reseed_subset(self.cur_epoch - 1)
 
             # 1) 학습
             tr_loss, tr_snr = self._train_one_epoch(self.cur_epoch)
