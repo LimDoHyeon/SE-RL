@@ -13,10 +13,11 @@ low_pass: 0
 interpolate: 0
 
 # --- DataLoader 설정 --- #
-batch_size:   16
+batch_size:   32
 num_workers:  16    # <-- 여기에 원하는 워커 수를 지정
 pin_memory:   true # (필요에 따라 추가)
 dataset_length: 3000
+subset_seed: 42
 
 # --- 모델 --- #
 # model: 1             # (원래 있던 키, 필요 없으면 삭제)
@@ -32,7 +33,7 @@ normalize: true       # (필요하다면, SE/FG agent에서 LayerNorm 적용 여
 
 # --- 옵티마이저 & 학습 --- #
 epochs:          100
-lr:              !!float 1e-3
+lr:              !!float 1e-4
 momentum:        0.9
 l2:              0.0
 scheduler_factor:    0.5
@@ -43,7 +44,7 @@ weights: 1.0
 episod: 1
 
 # --- 저장 & 로깅 --- #
-save_folder:    "exp/temp"
+save_folder:    "exp/serl-bs32-pesq6"
 early_stop:      10
 resume_state:  1
 print_freq:     500
