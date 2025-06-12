@@ -5,3 +5,4 @@ __pycache__
 utils.__pycache__
 exp
 utilitycodes.ipynb
+config/train_config.yaml
