@@ -17,7 +17,10 @@ import torch.distributed as dist
 
 from utils.util import check_parameters
 from model.loss import Loss, mlloss
-from tqdm import tqdm
+try:                               # 터미널 / 노트북 어디서든 동작
+    from tqdm.auto import tqdm
+except ImportError:                # tqdm < 4.65 호환
+    from tqdm import tqdm
 from utils.metrics import pesq_wrapper as pesq
 
 
@@ -55,6 +58,7 @@ class Trainer:
         self.resume_state: int = opt.resume_state
         self.weights: float = opt.weights
         self.episod: int = opt.episod
+        self.is_main = (not dist.is_initialized()) or dist.get_rank() == 0
 
         # Device inferred from the model
         self.device: torch.device = next(model.parameters()).device
@@ -131,9 +135,9 @@ class Trainer:
             self.train_dataloader,
             desc=f"[Train][Epoch {epoch}]",
             unit="batch",
-            ascii=True,
+            position=0,  # 여러 bar 겹칠 때 첫 줄 고정
             dynamic_ncols=True,
-            disable=False,
+            disable=not self.is_main,  # rank0 만 표시
             file=sys.stdout,
         )
         max_steps = len(self.train_dataloader)
@@ -231,15 +235,15 @@ class Trainer:
         loop = tqdm(
             self.val_dataloader,
             desc=f"[Valid][Epoch {epoch}]",
-            leave=False,
-            ascii=True,
+            unit="batch",
+            position=0,  # 여러 bar 겹칠 때 첫 줄 고정
             dynamic_ncols=True,
-            disable=False,
+            disable=not self.is_main,  # rank0 만 표시
             file=sys.stdout,
         )
         with torch.no_grad():
             # for step, (data_noisy, data_clean) in enumerate(loop, 1):
-            for step, (data_noisy, data_clean, *__) in enumerate(self.val_dataloader, 1):
+            for step, (data_noisy, data_clean, *__) in enumerate(loop, 1):
                 data_noisy = data_noisy.to(self.device, non_blocking=True)
                 data_clean = data_clean.to(self.device, non_blocking=True)
 
@@ -272,8 +276,18 @@ class Trainer:
         epoch_loss, epoch_snr = 0.0, 0.0
         start_time = time.time()
 
+        loop = tqdm(
+            self.train_dataloader,
+            desc=f"[Train][E{epoch:03d}]",
+            unit="batch",
+            ascii=True,
+            dynamic_ncols=True,
+            disable=False,  # DDP면 rank0만 True로 두세요
+            file=sys.stdout,
+        )
+
         # for step, (data_noisy, data_clean) in enumerate(self.train_dataloader, 1):
-        for step, (data_noisy, data_clean, *__) in enumerate(self.train_dataloader, 1):
+        for step, (data_noisy, data_clean, *__) in enumerate(loop, 1):
             data_noisy = data_noisy.to(self.device, non_blocking=True)
             data_clean = data_clean.to(self.device, non_blocking=True)
 
@@ -326,6 +340,11 @@ class Trainer:
                 epoch_loss += loss_dist.item()
                 epoch_snr += loss_snr_rl.item()
 
+                # ── CHG: 현재 평균을 bar에 반영 ──
+                loop.set_postfix(
+                    loss=f"{epoch_loss / step:.4f}",
+                    snr=f"{epoch_snr / step:.2f}"
+                )
             else:
                 # ── Supervised-only 모드 (episod == 0) ──
                 # 한 번만 forward → loss 계산 → backward → step
@@ -363,6 +382,16 @@ class Trainer:
         self.model.eval()
         total_loss, total_snr, total_pesq = 0.0, 0.0, 0.0
 
+        loop = tqdm(
+            self.val_dataloader,
+            desc=f"[Valid][E{epoch:03d}]",
+            unit="batch",
+            ascii=True,
+            dynamic_ncols=True,
+            disable=False,
+            file=sys.stdout,
+        )
+
         with torch.inference_mode():
             # for noisy, clean in self.val_dataloader:
             for noisy, clean, *__ in self.val_dataloader:
@@ -391,6 +420,10 @@ class Trainer:
                 "[Epoch %03d] VAL LOSS(RMSE)=%.4f  PESQ=%.2f  SNR=%.2f dB",
                 epoch, avg_loss, avg_pesq, avg_snr
             )
+        loop.set_postfix(
+            rmse=f"{avg_loss:.4f}",
+            snr=f"{avg_snr:.2f}"
+        )
         return avg_loss, avg_snr, avg_pesq
 
     # ------------------------------------------------------------------
