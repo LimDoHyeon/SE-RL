@@ -188,9 +188,6 @@ class AudioDataset(Dataset):
             wav = wav[:1, :]
         return wav
 
-    def __len__(self):
-        return min(self.dataset_length, len(self.file_pairs))
-
     # ------------------------------------------- #
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         noisy_rel, clean_rel = self.file_pairs[idx]

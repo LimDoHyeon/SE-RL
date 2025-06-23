@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
-import os
+import os, sys
 from typing import Dict, List
 from pathlib import Path
 
@@ -57,7 +57,8 @@ def _evaluate(
     rows: List[Dict[str, float]] = []
     saved = 0
 
-    for noisy, clean, rels in tqdm(loader, desc="Evaluating", unit="batch"):
+    for noisy, clean, rels in tqdm(loader, desc="Evaluating", unit="batch",
+                                   ascii=True, dynamic_ncols=True, file=sys.stdout):
         noisy, clean = noisy.to(device), clean.to(device)
         out = model(noisy, deterministic=True)
         enh = out[1] if isinstance(out, (list, tuple)) and len(out) >= 2 else out if not isinstance(out,(list, tuple)) else out[0]
@@ -171,9 +172,9 @@ if __name__ == "__main__":
         p.add_argument("--noisy_root", default="data/Valentini/valentini")
         p.add_argument("--clean_root", default="data/Valentini/valentini")
         p.add_argument("--list_file", default="data/Valentini/valentini/test1.lst")
-        p.add_argument("--checkpoint", "-ckpt", default="exp/serl-bs32/nnet_iter92_trloss0.0213_valoss0.0245.pt")
-        p.add_argument("--out_dir", "-o", default="exp/eval_bs32/eval_out_epo92")
-        p.add_argument("--generate_waveform", "-gen", type=int, default=10,
+        p.add_argument("--checkpoint", "-ckpt", default="exp/serl-bs32/nnet_iter113_trloss0.0250_valoss0.0244.pt")
+        p.add_argument("--out_dir", "-o", default="exp/eval_bs32/eval_out_113")
+        p.add_argument("--generate_waveform", "-gen", type=int, default=0,
                        help="save first N samples (noisy & enhanced) as wav")
         args = p.parse_args()
 
