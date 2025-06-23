@@ -3,7 +3,7 @@ from utils.metrics import pesq_wrapper as pesq
 from torchmetrics.functional.audio import scale_invariant_signal_distortion_ratio as sisdr
 
 PESQ_WEIGHT = 0.7
-SISDR_WEIGHT = 0.3
+SISDR_WEIGHT = 1 - PESQ_WEIGHT
 
 def Loss(gauss, data_predict, data_orig):
     # mu = gauss[:, :, 0]  # [B, channel_gauss]
